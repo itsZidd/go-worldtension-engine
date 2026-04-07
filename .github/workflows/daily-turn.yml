@@ -1,0 +1,26 @@
+name: WorldTension Daily Turn
+
+on:
+  schedule:
+    # Runs automatically at 00:00 UTC every single day
+    - cron: "0 0 * * *"
+  workflow_dispatch: # This adds a button to let you trigger it manually anytime!
+
+jobs:
+  update-tension-scores:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22" # Uses the latest Go environment
+
+      - name: Run Data Engine
+        env:
+          # This pulls your database password securely from GitHub Secrets
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: go run .
