@@ -17,11 +17,18 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22" # Uses the latest Go environment
+          go-version: "1.22"
 
       - name: Run Data Engine
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }} # Add this line
         run: go run .
+
+      # THE FINAL HANDSHAKE
+      - name: Trigger Vercel Astro Build
+        # This 'if' ensures we don't trigger a rebuild if the Go engine crashed
+        if: success()
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: curl -X POST ${{ secrets.VERCEL_DEPLOY_HOOK }}
