@@ -21,6 +21,7 @@ jobs:
 
       - name: Run Data Engine
         env:
-          # This pulls your database password securely from GitHub Secrets
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }} # Add this line
         run: go run .
