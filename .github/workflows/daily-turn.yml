@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs automatically at 00:00 UTC every single day
     - cron: "0 0 * * *"
-  workflow_dispatch: # This adds a button to let you trigger it manually anytime!
+  workflow_dispatch: # Allows manual trigger from the Actions tab
 
 jobs:
   update-tension-scores:
@@ -23,6 +23,9 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # ACLED secrets removed here
+          OPENSKY_CLIENT_ID: ${{ secrets.OPENSKY_CLIENT_ID }}
+          OPENSKY_CLIENT_SECRET: ${{ secrets.OPENSKY_CLIENT_SECRET }}
         run: go run .
 
       # THE FINAL HANDSHAKE
@@ -31,4 +34,4 @@ jobs:
         if: success()
         env:
           VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
-        run: curl -X POST ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: curl -X POST $VERCEL_DEPLOY_HOOK

@@ -6,19 +6,18 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/google/generative-ai-go/genai"
 )
 
 const (
-	geminiModel = "gemini-3-flash-preview"
+	geminiModel = "gemini-2.5-flash" // Updated to a stable version
 	chunkSize   = 50
+	maxRetries  = 3
 )
 
-// AnalyzeCountries splits rawData into chunks, calls Gemini per chunk,
-// and merges all results. A failed chunk is logged and skipped so one
-// bad response never aborts the full daily run.
-func AnalyzeCountries(ctx context.Context, client *genai.Client, rawData map[string][]string) ([]CountryUpdate, error) {
+func AnalyzeCountries(ctx context.Context, client *genai.Client, rawData map[string]CountryInput) ([]CountryUpdate, error) {
 	keys := make([]string, 0, len(rawData))
 	for iso := range rawData {
 		keys = append(keys, iso)
@@ -28,33 +27,52 @@ func AnalyzeCountries(ctx context.Context, client *genai.Client, rawData map[str
 	allUpdates := make([]CountryUpdate, 0, len(keys))
 
 	for i := 0; i < len(keys); i += chunkSize {
-		end := min(i+chunkSize, len(keys))
+		end := i + chunkSize
+		if end > len(keys) {
+			end = len(keys)
+		}
 		chunkNum := (i / chunkSize) + 1
-
 		chunkData := buildChunk(keys[i:end], rawData)
 
-		fmt.Printf("[AI] Chunk %d/%d — analyzing %d countries...\n", chunkNum, totalChunks, len(chunkData))
+		log.Printf("[AI] chunk %d/%d — analyzing %d countries...", chunkNum, totalChunks, len(chunkData))
 
-		updates, err := analyzeChunk(ctx, client, chunkData)
+		updates, err := analyzeChunkWithRetry(ctx, client, chunkData, chunkNum)
 		if err != nil {
-			log.Printf("[AI] Chunk %d/%d failed, skipping: %v", chunkNum, totalChunks, err)
+			log.Printf("[AI] chunk %d/%d failed after %d retries, skipping: %v", chunkNum, totalChunks, maxRetries, err)
 			continue
 		}
-
-		validateChunk(chunkNum, len(chunkData), len(updates))
 
 		allUpdates = append(allUpdates, updates...)
 	}
 
-	fmt.Printf("[AI] Done — %d/%d countries analyzed successfully.\n", len(allUpdates), len(keys))
-
+	log.Printf("[AI] done — %d/%d countries analyzed successfully.", len(allUpdates), len(keys))
 	return allUpdates, nil
 }
 
-// analyzeChunk sends a single chunk of country data to Gemini
-// and returns the parsed updates.
-func analyzeChunk(ctx context.Context, client *genai.Client, rawData map[string][]string) ([]CountryUpdate, error) {
-	model := buildModel(client)
+func analyzeChunkWithRetry(ctx context.Context, client *genai.Client, chunkData map[string]CountryInput, chunkNum int) ([]CountryUpdate, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		updates, err := analyzeChunk(ctx, client, chunkData)
+		if err == nil {
+			return updates, nil
+		}
+		lastErr = err
+		wait := time.Duration(attempt*attempt) * time.Second
+		log.Printf("[AI] chunk %d attempt %d/%d failed: %v — retrying in %s", chunkNum, attempt, maxRetries, err, wait)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return nil, lastErr
+}
+
+func analyzeChunk(ctx context.Context, client *genai.Client, rawData map[string]CountryInput) ([]CountryUpdate, error) {
+	model := client.GenerativeModel(geminiModel)
+	model.SystemInstruction = &genai.Content{
+		Parts: []genai.Part{genai.Text("Output valid JSON only. No prose. No markdown fences. No backticks.")},
+	}
 
 	prompt, err := buildPrompt(rawData)
 	if err != nil {
@@ -69,76 +87,51 @@ func analyzeChunk(ctx context.Context, client *genai.Client, rawData map[string]
 	return parseAIResponse(resp)
 }
 
-// buildChunk constructs a map subset from a slice of ISO keys.
-func buildChunk(keys []string, rawData map[string][]string) map[string][]string {
-	chunk := make(map[string][]string, len(keys))
+func buildChunk(keys []string, rawData map[string]CountryInput) map[string]CountryInput {
+	chunk := make(map[string]CountryInput, len(keys))
 	for _, iso := range keys {
 		chunk[iso] = rawData[iso]
 	}
 	return chunk
 }
 
-// validateChunk logs a warning if Gemini returned significantly fewer
-// updates than expected, which indicates silent truncation.
-func validateChunk(chunkNum, sent, received int) {
-	if received < sent/2 {
-		log.Printf(
-			"[AI] WARNING: chunk %d — sent %d countries, received %d back. Possible truncation.",
-			chunkNum, sent, received,
-		)
-	}
-}
-
-// buildModel returns a configured Gemini model with strict JSON output instructions.
-func buildModel(client *genai.Client) *genai.GenerativeModel {
-	model := client.GenerativeModel(geminiModel)
-	model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{genai.Text("Output valid JSON only. No prose. No markdown blocks.")},
-	}
-	return model
-}
-
-// buildPrompt serializes the country event data and constructs
-// the WorldTension analysis prompt.
-func buildPrompt(rawData map[string][]string) (string, error) {
-	isoCodes := make([]string, 0, len(rawData))
-	for iso := range rawData {
-		isoCodes = append(isoCodes, iso)
-	}
-
+func buildPrompt(rawData map[string]CountryInput) (string, error) {
 	contextJSON, err := json.Marshal(rawData)
 	if err != nil {
 		return "", fmt.Errorf("marshal raw data: %w", err)
 	}
 
-	return fmt.Sprintf(`
-You are the WorldTension Engine.
-Analyze these EventCodes/Headlines: %s
+	return fmt.Sprintf(`You are the WorldTension Engine.
+Analyze these inputs to calculate HoI4-style metrics:
 
-Target Countries: %v.
+1. tension: 0.0 to 10.0 (Global threat level)
+2. stability: 0 to 100 (Internal peace)
+3. industrial: 0 to 100 (Economic health)
+4. report: Short briefing. Mention specific GDELT event types or maritime drops.
+5. primary_driver: Choose from: "Armed Conflict", "Trade Disruption", "Civil Unrest", "Diplomatic Tension".
 
-TASK: Calculate HoI4-style metrics based on the provided event data.
-1. tension:    0.0 to 10.0 (High if conflict/military events)
-2. stability:  0 to 100    (Low if protests/coups)
-3. industrial: 0 to 100    (Low if strikes/disasters)
-4. report: A short, professional intelligence briefing sentence.
+Data: %s
 
-Output ONLY a strict JSON object:
-{"updates": [{"iso_code": "USA", "tension": 1.2, "stability": 80, "industrial": 90, "report": "Summary"}]}`,
-		contextJSON, isoCodes), nil
+Output ONLY valid JSON in this format:
+{"updates":[{"iso_code":"USA","tension":1.2,"stability":80,"industrial":90,"primary_driver":"News","report":"Summary"}]}`,
+		string(contextJSON)), nil
 }
 
-// parseAIResponse extracts and unmarshals the JSON from a Gemini response.
 func parseAIResponse(resp *genai.GenerateContentResponse) ([]CountryUpdate, error) {
 	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
-		return nil, fmt.Errorf("empty response from AI")
+		return nil, fmt.Errorf("empty response from Gemini")
 	}
 
-	rawText := fmt.Sprint(resp.Candidates[0].Content.Parts[0])
+	part := resp.Candidates[0].Content.Parts[0]
+	textPart, ok := part.(genai.Text)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response part type: %T", part)
+	}
+	rawText := string(textPart)
 
 	jsonStr, err := extractJSON(rawText)
 	if err != nil {
-		return nil, fmt.Errorf("extract json: %w (raw: %s)", err, rawText)
+		return nil, fmt.Errorf("extract json: %w (raw: %.200s)", err, rawText)
 	}
 
 	var result AIResponse
@@ -149,8 +142,6 @@ func parseAIResponse(resp *genai.GenerateContentResponse) ([]CountryUpdate, erro
 	return result.Updates, nil
 }
 
-// extractJSON strips any surrounding prose or markdown fences,
-// returning only the outermost JSON object.
 func extractJSON(s string) (string, error) {
 	start := strings.Index(s, "{")
 	end := strings.LastIndex(s, "}")
@@ -158,13 +149,4 @@ func extractJSON(s string) (string, error) {
 		return "", fmt.Errorf("no JSON object found")
 	}
 	return s[start : end+1], nil
-}
-
-// min returns the smaller of two ints.
-// Remove this if your Go version is 1.21+ (builtin min available).
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

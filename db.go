@@ -8,63 +8,54 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Updated to use "stability" and "intel_report" to match schema consolidation
+// Added primary_driver as $8
 const upsertQuery = `
-    INSERT INTO world_tension (
-        iso_code, fips_code, event_count, tension_score,
-        stability, industrial_capacity, recent_activity, last_updated
-    )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-    ON CONFLICT (iso_code)
-    DO UPDATE SET
-        fips_code           = EXCLUDED.fips_code,
-        event_count          = EXCLUDED.event_count,
-        tension_score        = EXCLUDED.tension_score,
-        stability            = EXCLUDED.stability,
-        industrial_capacity  = EXCLUDED.industrial_capacity,
-        recent_activity      = EXCLUDED.recent_activity,
-        last_updated         = NOW();`
+	INSERT INTO world_tension (
+		iso_code, fips_code, event_count, tension_score,
+		stability, industrial_capacity, recent_activity, primary_driver, last_updated
+	)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+	ON CONFLICT (iso_code)
+	DO UPDATE SET
+		fips_code           = EXCLUDED.fips_code,
+		event_count         = EXCLUDED.event_count,
+		tension_score       = EXCLUDED.tension_score,
+		stability           = EXCLUDED.stability,
+		industrial_capacity = EXCLUDED.industrial_capacity,
+		recent_activity     = EXCLUDED.recent_activity,
+		primary_driver      = EXCLUDED.primary_driver,
+		last_updated        = NOW();`
 
+// When a country decays to normal, we reset the driver so the map tooltip clears out
 const decayQuery = `
-    UPDATE world_tension
-    SET
-        tension_score        = GREATEST(tension_score - 0.5, 0),
-        stability            = LEAST(stability + 2, 100),
-        industrial_capacity = LEAST(industrial_capacity + 1, 100),
-        recent_activity      = 'No significant activity. Scores normalizing.'
-    WHERE last_updated < NOW() - INTERVAL '48 hours';`
+	UPDATE world_tension
+	SET
+		tension_score       = GREATEST(tension_score - 0.5, 0),
+		stability           = LEAST(stability + 2, 100),
+		industrial_capacity = LEAST(industrial_capacity + 1, 100),
+		recent_activity     = 'No significant activity. Scores normalizing.',
+		primary_driver      = 'Normalization'
+	WHERE last_updated < NOW() - INTERVAL '48 hours';`
 
-func UpsertCountryUpdates(ctx context.Context, db *pgx.Conn, updates []CountryUpdate, rawData map[string][]string) error {
-	var errCount int
-
+// Updated rawData type to map[string]CountryInput
+func UpsertCountryUpdates(ctx context.Context, db *pgx.Conn, updates []CountryUpdate, rawData map[string]CountryInput) error {
 	for _, u := range updates {
-		u = clampUpdate(u)
+		inputData := rawData[u.ISOCode]
+		totalEvents := len(inputData.GDELTEvents) // Just GDELT now
 
-		fips := IsoToFips[u.ISOCode]
-		eventCount := len(rawData[u.ISOCode])
-
-		// The order of parameters must match the $1 - $7 in upsertQuery
 		_, err := db.Exec(ctx, upsertQuery,
-			u.ISOCode,    // $1
-			fips,         // $2
-			eventCount,   // $3
-			u.Tension,    // $4
-			u.Stability,  // $5
-			u.Industrial, // $6
-			u.Report,     // $7
+			u.ISOCode,
+			IsoToFips[u.ISOCode],
+			totalEvents,
+			u.Tension,
+			u.Stability,
+			u.Industrial,
+			u.Report,
+			u.PrimaryDriver,
 		)
 		if err != nil {
-			log.Printf("[DB] Upsert failed for %s: %v", u.ISOCode, err)
-			errCount++
-			continue
+			log.Printf("[DB] Fail %s: %v", u.ISOCode, err)
 		}
-
-		fmt.Printf("[DB] %s — tension: %.1f, stability: %d%%, industrial: %d%%\n",
-			u.ISOCode, u.Tension, u.Stability, u.Industrial)
-	}
-
-	if errCount > 0 {
-		return fmt.Errorf("%d upsert(s) failed out of %d", errCount, len(updates))
 	}
 	return nil
 }
@@ -87,14 +78,4 @@ func clampUpdate(u CountryUpdate) CountryUpdate {
 	u.Stability = int(clampFloat(float64(u.Stability), 0, 100))
 	u.Industrial = int(clampFloat(float64(u.Industrial), 0, 100))
 	return u
-}
-
-func clampFloat(val, min, max float64) float64 {
-	if val < min {
-		return min
-	}
-	if val > max {
-		return max
-	}
-	return val
 }
