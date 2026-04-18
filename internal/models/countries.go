@@ -1,4 +1,4 @@
-package main
+package models
 
 // FipsToIso maps GDELT's FIPS 10-4 country codes to ISO 3166-1 alpha-3 codes.
 // Source: https://github.com/mysociety/gaze/blob/master/data/fips-10-4-to-iso-country-codes.csv
@@ -140,7 +140,7 @@ var FipsToIso = map[string]string{
 	"PK": "PAK", // Pakistan
 	"PS": "PLW", // Palau
 	"PM": "PAN", // Panama
-	"PP": "PNG", // Papua New Guinea
+	"PP": "PNG", // Papua Guinea
 	"PA": "PRY", // Paraguay
 	"PE": "PER", // Peru
 	"RP": "PHL", // Philippines

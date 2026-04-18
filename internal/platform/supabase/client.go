@@ -1,12 +1,15 @@
-package main
+package gdelt
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// Import your shared models
 
 // Added primary_driver as $8
 const upsertQuery = `
@@ -78,4 +81,11 @@ func clampUpdate(u CountryUpdate) CountryUpdate {
 	u.Stability = int(clampFloat(float64(u.Stability), 0, 100))
 	u.Industrial = int(clampFloat(float64(u.Industrial), 0, 100))
 	return u
+}
+
+func CleanupOldData(db *sql.DB) error {
+	// Delete anything older than 365 days
+	query := `DELETE FROM country_daily_metrics WHERE recorded_at < NOW() - INTERVAL '1 year'`
+	_, err := db.Exec(query)
+	return err
 }
